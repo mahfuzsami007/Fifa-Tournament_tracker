@@ -1,445 +1,598 @@
 import React, { useState, useMemo } from 'react';
 
-// Pre-defined initial matchups for 3 players in a group (Round Robin)
-const GROUP_MATCH_TEMPLATES = [
-  { matchIndex: 0, p1Idx: 0, p2Idx: 1 },
-  { matchIndex: 1, p1Idx: 1, p2Idx: 2 },
-  { matchIndex: 2, p1Idx: 0, p2Idx: 2 },
+// STAGE CONSTANTS FOR FLOW CONTROL
+const STAGES = {
+  REGISTRATION: 0,
+  GROUP_STAGE: 1,
+  PLAYOFF_TABLE: 2,
+  SEMIFINALS: 3,
+  FINAL: 4,
+};
+
+// Fixture generator for a 3-player round robin inside a group
+const GROUP_FIXTURES_TEMPLATE = [
+  { p1Idx: 0, p2Idx: 1 },
+  { p1Idx: 1, p2Idx: 2 },
+  { p1Idx: 0, p2Idx: 2 },
+];
+
+// Fixture generator for the 4-player intermediate round robin table
+const ROUND_TABLE_TEMPLATE = [
+  { p1Idx: 0, p2Idx: 1, label: "Match R1-A" },
+  { p1Idx: 2, p2Idx: 3, label: "Match R1-B" },
+  { p1Idx: 0, p2Idx: 2, label: "Match R2-A" },
+  { p1Idx: 1, p2Idx: 3, label: "Match R2-B" },
+  { p1Idx: 0, p2Idx: 3, label: "Match R3-A" },
+  { p1Idx: 1, p2Idx: 2, label: "Match R3-B" },
 ];
 
 export default function App() {
-  // Player Registration State
-  const [players, setPlayers] = useState([
-    'Sami', 'Mahfuz', 'Player 3',
-    'Player 4', 'Player 5', 'Player 6',
-    'Player 7', 'Player 8', 'Player 9'
-  ]);
+  const [currentStage, setCurrentStage] = useState(STAGES.REGISTRATION);
+  
+  // Registration State
+  const [playerInputs, setPlayerInputs] = useState(
+    Array(9).fill("").map((_, i) => `Competitor ${i + 1}`)
+  );
+  const [randomizedSquads, setRandomizedSquads] = useState({ A: [], B: [], C: [] });
 
-  // Group Stage Scores State
-  const [groupScores, setGroupScores] = useState({});
-
-  // Playoff Bracket Scores State
-  const [playoffs, setPlayoffs] = useState({
-    qf1: { score1: '', score2: '', played: false },
-    qf2: { score1: '', score2: '', played: false },
-    sf1: { score1: '', score2: '', played: false },
-    sf2: { score1: '', score2: '', played: false },
-    final: { score1: '', score2: '', played: false },
+  // Match Scoring Matrices
+  const [groupScores, setGroupScores] = useState({}); // Key format: "G-[Group]-[Idx]"
+  const [roundTableScores, setRoundTableScores] = useState({}); // Key format: "RT-[Idx]"
+  const [knockoutScores, setKnockoutScores] = useState({
+    sf1: { s1: '', s2: '', played: false },
+    sf2: { s1: '', s2: '', played: false },
+    final: { s1: '', s2: '', played: false },
   });
 
-  const groups = useMemo(() => {
-    return {
-      A: [players[0], players[1], players[2]],
-      B: [players[3], players[4], players[5]],
-      C: [players[6], players[7], players[8]],
-    };
-  }, [players]);
+  // --- ACTIONS & ENGINE REQUISITES ---
 
-  // Calculate Group Standings
-  const standings = useMemo(() => {
-    const initStanding = (playerList) =>
-      playerList.reduce((acc, player) => {
-        acc[player] = { name: player, played: 0, won: 0, drawn: 0, lost: 0, points: 0, gd: 0 };
+  const handleShuffleAndLock = () => {
+    // Implement standard Fisher-Yates array shuffle execution
+    const pool = [...playerInputs].map(p => p.trim() || "Anonymous Pro");
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+
+    setRandomizedSquads({
+      A: [pool[0], pool[1], pool[2]],
+      B: [pool[3], pool[4], pool[5]],
+      C: [pool[6], pool[7], pool[8]],
+    });
+    setCurrentStage(STAGES.GROUP_STAGE);
+  };
+
+  // --- DYNAMIC DATA AGGREGATORS (MEMOIZED) ---
+
+  // Compute Group Stage Standings & Matrix
+  const groupStandings = useMemo(() => {
+    if (currentStage < STAGES.GROUP_STAGE) return { A: [], B: [], C: [] };
+
+    const initializeStandingsNode = (squad) => 
+      squad.reduce((acc, name) => {
+        acc[name] = { name, p: 0, w: 0, d: 0, l: 0, gd: 0, pts: 0 };
         return acc;
       }, {});
 
-    const stats = {
-      A: initStanding(groups.A),
-      B: initStanding(groups.B),
-      C: initStanding(groups.C),
+    const metrics = {
+      A: initializeStandingsNode(randomizedSquads.A),
+      B: initializeStandingsNode(randomizedSquads.B),
+      C: initializeStandingsNode(randomizedSquads.C),
     };
 
-    ['A', 'B', 'C'].forEach((gId) => {
-      GROUP_MATCH_TEMPLATES.forEach((tmpl, idx) => {
-        const key = `group-${gId}-${idx}`;
-        const match = groupScores[key];
-        if (match && match.played) {
-          const p1 = groups[gId][tmpl.p1Idx];
-          const p2 = groups[gId][tmpl.p2Idx];
-          const s1 = parseInt(match.score1) || 0;
-          const s2 = parseInt(match.score2) || 0;
+    // Calculate match arrays iteratively
+    ['A', 'B', 'C'].forEach(groupId => {
+      GROUP_FIXTURES_TEMPLATE.forEach((f, idx) => {
+        const key = `G-${groupId}-${idx}`;
+        const data = groupScores[key];
+        if (data && data.played) {
+          const p1 = randomizedSquads[groupId][f.p1Idx];
+          const p2 = randomizedSquads[groupId][f.p2Idx];
+          const s1 = parseInt(data.s1) || 0;
+          const s2 = parseInt(data.s2) || 0;
 
-          stats[gId][p1].played += 1;
-          stats[gId][p2].played += 1;
-          stats[gId][p1].gd += s1 - s2;
-          stats[gId][p2].gd += s2 - s1;
+          metrics[groupId][p1].p += 1;
+          metrics[groupId][p2].p += 1;
+          metrics[groupId][p1].gd += (s1 - s2);
+          metrics[groupId][p2].gd += (s2 - s1);
 
           if (s1 > s2) {
-            stats[gId][p1].won += 1;
-            stats[gId][p1].points += 3;
-            stats[gId][p2].lost += 1;
+            metrics[groupId][p1].w += 1; metrics[groupId][p1].pts += 3;
+            metrics[groupId][p2].l += 1;
           } else if (s2 > s1) {
-            stats[gId][p2].won += 1;
-            stats[gId][p2].points += 3;
-            stats[gId][p1].lost += 1;
+            metrics[groupId][p2].w += 1; metrics[groupId][p2].pts += 3;
+            metrics[groupId][p1].l += 1;
           } else {
-            stats[gId][p1].drawn += 1;
-            stats[gId][p1].points += 1;
-            stats[gId][p2].drawn += 1;
-            stats[gId][p2].points += 1;
+            metrics[groupId][p1].d += 1; metrics[groupId][p1].pts += 1;
+            metrics[groupId][p2].d += 1; metrics[groupId][p2].pts += 1;
           }
         }
       });
     });
 
-    const sortStandings = (groupObj) =>
-      Object.values(groupObj).sort((a, b) => b.points - a.points || b.gd - a.gd);
+    // High performance multi-level validation sorting
+    const sortStandings = (obj) => Object.values(obj).sort((a, b) => b.pts - a.pts || b.gd - a.gd || a.name.localeCompare(b.name));
 
     return {
-      A: sortStandings(stats.A),
-      B: sortStandings(stats.B),
-      C: sortStandings(stats.C),
+      A: sortStandings(metrics.A),
+      B: sortStandings(metrics.B),
+      C: sortStandings(metrics.C),
     };
-  }, [groups, groupScores]);
+  }, [randomizedSquads, groupScores, currentStage]);
 
-  // Seeding the Playoff Bracket (Top 2 from each group)
-  const seededPlayers = useMemo(() => {
-    const qualifiers = [
-      { player: standings.A[0]?.name, group: 'A', rank: 1, pts: standings.A[0]?.points, gd: standings.A[0]?.gd },
-      { player: standings.A[1]?.name, group: 'A', rank: 2, pts: standings.A[1]?.points, gd: standings.A[1]?.gd },
-      { player: standings.B[0]?.name, group: 'B', rank: 1, pts: standings.B[0]?.points, gd: standings.B[0]?.gd },
-      { player: standings.B[1]?.name, group: 'B', rank: 2, pts: standings.B[1]?.points, gd: standings.B[1]?.gd },
-      { player: standings.C[0]?.name, group: 'C', rank: 1, pts: standings.C[0]?.points, gd: standings.C[0]?.gd },
-      { player: standings.C[1]?.name, group: 'C', rank: 2, pts: standings.C[1]?.points, gd: standings.C[1]?.gd },
-    ];
+  // Evaluated Seeding for Stage Gate 2 Advancement
+  const seedRankings = useMemo(() => {
+    if (currentStage < STAGES.GROUP_STAGE) return [];
+    
+    // Extract top 2 qualifiers per group layout
+    const rawQualifiers = [];
+    ['A', 'B', 'C'].forEach(g => {
+      if (groupStandings[g][0]) rawQualifiers.push({ ...groupStandings[g][0], grpRank: 1 });
+      if (groupStandings[g][1]) rawQualifiers.push({ ...groupStandings[g][1], grpRank: 2 });
+    });
 
-    return qualifiers.sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      return b.pts - a.pts || b.gd - a.gd;
-    }).map((q) => q.player);
-  }, [standings]);
+    // Global Seed Strategy: Rank 1s outrank Rank 2s always, followed by metric resolution
+    return rawQualifiers.sort((a, b) => {
+      if (a.grpRank !== b.grpRank) return a.grpRank - b.grpRank;
+      return b.pts - a.pts || b.gd - a.gd || a.name.localeCompare(b.name);
+    }).map(item => item.name);
+  }, [groupStandings, currentStage]);
 
-  // Dynamic Playoff Winners Calculation
-  const bracketData = useMemo(() => {
-    const getWinner = (match, p1, p2) => {
-      if (!match.played) return { name: 'TBD', solved: false };
-      const s1 = parseInt(match.score1) || 0;
-      const s2 = parseInt(match.score2) || 0;
-      if (s1 > s2) return { name: p1, solved: true };
-      if (s2 > s1) return { name: p2, solved: true };
-      return { name: 'TBD', solved: false };
+  // Intermediate Round Table Engine Core
+  const intermediateTableStandings = useMemo(() => {
+    if (seedRankings.length < 6) return [];
+    const tableContenders = [seedRankings[2], seedRankings[3], seedRankings[4], seedRankings[5]]; // Seeds 3 to 6
+
+    const structure = tableContenders.reduce((acc, name) => {
+      acc[name] = { name, p: 0, w: 0, d: 0, l: 0, gd: 0, pts: 0 };
+      return acc;
+    }, {});
+
+    ROUND_TABLE_TEMPLATE.forEach((f, idx) => {
+      const key = `RT-${idx}`;
+      const data = roundTableScores[key];
+      if (data && data.played) {
+        const p1 = tableContenders[f.p1Idx];
+        const p2 = tableContenders[f.p2Idx];
+        const s1 = parseInt(data.s1) || 0;
+        const s2 = parseInt(data.s2) || 0;
+
+        structure[p1].p += 1; structure[p2].p += 1;
+        structure[p1].gd += (s1 - s2); structure[p2].gd += (s2 - s1);
+
+        if (s1 > s2) {
+          structure[p1].w += 1; structure[p1].pts += 3;
+          structure[p2].l += 1;
+        } else if (s2 > s1) {
+          structure[p2].w += 1; structure[p2].pts += 3;
+          structure[p1].l += 1;
+        } else {
+          structure[p1].d += 1; structure[p1].pts += 1;
+          structure[p2].d += 1; structure[p2].pts += 1;
+        }
+      }
+    });
+
+    return Object.values(structure).sort((a, b) => b.pts - a.pts || b.gd - a.gd || a.name.localeCompare(b.name));
+  }, [seedRankings, roundTableScores]);
+
+  // Compute Knockout Bracket Graph
+  const finalFourPairings = useMemo(() => {
+    if (seedRankings.length < 2 || intermediateTableStandings.length < 2) {
+      return { sf1: ['TBD', 'TBD'], sf2: ['TBD', 'TBD'], final: ['TBD', 'TBD'], champ: 'TBD' };
+    }
+
+    const sf1_p1 = seedRankings[0]; // Seed 1
+    const sf1_p2 = intermediateTableStandings[1]?.name || 'TBD'; // Table Rank 2
+    const sf2_p1 = seedRankings[1]; // Seed 2
+    const sf2_p2 = intermediateTableStandings[0]?.name || 'TBD'; // Table Rank 1
+
+    const getMatchWinner = (scoreNode, fallbackP1, fallbackP2) => {
+      if (!scoreNode || !scoreNode.played) return 'TBD';
+      const s1 = parseInt(scoreNode.s1) || 0;
+      const s2 = parseInt(scoreNode.s2) || 0;
+      return s1 > s2 ? fallbackP1 : s2 > s1 ? fallbackP2 : 'TBD (Draw Error)';
     };
 
-    const qf1Winner = getWinner(playoffs.qf1, seededPlayers[2], seededPlayers[5]);
-    const qf2Winner = getWinner(playoffs.qf2, seededPlayers[3], seededPlayers[4]);
+    const f_p1 = getMatchWinner(knockoutScores.sf1, sf1_p1, sf1_p2);
+    const f_p2 = getMatchWinner(knockoutScores.sf2, sf2_p1, sf2_p2);
+    const champion = getMatchWinner(knockoutScores.final, f_p1, f_p2);
 
-    const sf1Winner = getWinner(playoffs.sf1, seededPlayers[0], qf2Winner.name);
-    const sf2Winner = getWinner(playoffs.sf2, seededPlayers[1], qf1Winner.name);
+    return {
+      sf1: [sf1_p1, sf1_p2],
+      sf2: [sf2_p1, sf2_p2],
+      final: [f_p1, f_p2],
+      champ: champion
+    };
+  }, [seedRankings, intermediateTableStandings, knockoutScores]);
 
-    const champion = getWinner(playoffs.final, sf1Winner.name, sf2Winner.name);
-
-    return { qf1Winner, qf2Winner, sf1Winner, sf2Winner, champion };
-  }, [seededPlayers, playoffs]);
-
-  const handlePlayerNameChange = (index, value) => {
-    const updated = [...players];
-    updated[index] = value;
-    setPlayers(updated);
-  };
-
-  const handleGroupScoreChange = (key, field, value) => {
-    setGroupScores((prev) => ({
-      ...prev,
-      [key]: { ...prev[key], [field]: value, played: true },
-    }));
-  };
-
-  const handlePlayoffScoreChange = (matchKey, field, value) => {
-    setPlayoffs((prev) => ({
-      ...prev,
-      [matchKey]: { ...prev[matchKey], [field]: value, played: true },
-    }));
+  // Check stage completion to unlock next button safely
+  const isStageComplete = () => {
+    if (currentStage === STAGES.GROUP_STAGE) {
+      return ['A', 'B', 'C'].every(g => 
+        [0, 1, 2].every(idx => groupScores[`G-${g}-${idx}`]?.played)
+      );
+    }
+    if (currentStage === STAGES.PLAYOFF_TABLE) {
+      return [0, 1, 2, 3, 4, 5].every(idx => roundTableScores[`RT-${idx}`]?.played);
+    }
+    if (currentStage === STAGES.SEMIFINALS) {
+      return knockoutScores.sf1.played && knockoutScores.sf2.played;
+    }
+    return false;
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-lime-400 selection:text-black">
-      {/* Sporty Top Accent Bar */}
       <div className="h-1.5 bg-gradient-to-r from-lime-400 via-emerald-500 to-cyan-500 w-full" />
-
+      
       <div className="max-w-7xl mx-auto px-4 py-10 space-y-12">
-        {/* HEADER */}
-        <header className="relative flex flex-col md:flex-row justify-between items-center bg-slate-900/60 border border-slate-800 p-6 rounded-2xl backdrop-blur-md shadow-2xl overflow-hidden">
-          <div className="absolute top-0 right-0 w-96 h-96 bg-lime-500/10 rounded-full blur-3xl -z-10" />
-          <div className="text-center md:text-left space-y-1">
+        {/* HEADER BRANDING */}
+        <header className="relative flex flex-col md:flex-row justify-between items-center bg-slate-900/60 border border-slate-800 p-6 rounded-2xl backdrop-blur-md shadow-2xl">
+          <div className="space-y-1">
             <div className="inline-flex items-center gap-2 bg-lime-500/10 text-lime-400 border border-lime-500/20 px-3 py-1 rounded-full text-xs font-black tracking-widest uppercase">
-              ⚡ LIVE TRACKER
+              ⚙️ ARCHITECT EDITION
             </div>
             <h1 className="text-4xl font-black tracking-tighter uppercase text-white italic">
-              FIFA TOURNAMENT <span className="text-lime-400">HUB</span>
+              PRO MATCH <span className="text-lime-400">ENGINE v2</span>
             </h1>
-            <p className="text-slate-400 text-sm font-medium">
-              9 Contenders • 3 Groups • Single-Elimination Finals
-            </p>
           </div>
-          <div className="mt-4 md:mt-0 bg-slate-950/80 border border-slate-800 px-6 py-3 rounded-xl text-center">
-            <span className="block text-[10px] text-slate-500 font-bold tracking-widest uppercase">Total Fixtures</span>
-            <span className="text-2xl font-extrabold text-lime-400 tracking-tight">14 MATCHES</span>
+          <div className="mt-4 md:mt-0 flex gap-2">
+            {Object.keys(STAGES).map((name, val) => (
+              <span 
+                key={name}
+                className={`text-[10px] px-3 py-1.5 font-bold rounded-lg border tracking-wider transition-all ${
+                  currentStage === val 
+                    ? 'bg-lime-400 text-black border-lime-400 shadow-[0_0_15px_rgba(204,255,0,0.3)]' 
+                    : 'bg-slate-900 text-slate-500 border-slate-800'
+                }`}
+              >
+                {name}
+              </span>
+            ))}
           </div>
         </header>
 
-        {/* SECTION 1: Player Registration */}
-        <section className="bg-gradient-to-b from-slate-900 to-slate-950 p-6 rounded-2xl border border-slate-800/80 shadow-xl">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-1.5 h-6 bg-lime-400 rounded" />
-            <h2 className="text-lg font-black uppercase tracking-tight italic text-white">Squad Selection</h2>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {players.map((name, idx) => (
-              <div key={idx} className="group relative flex items-center bg-slate-950 border border-slate-800 focus-within:border-lime-400 rounded-xl transition-all duration-200 shadow-md">
-                <span className="flex items-center justify-center bg-slate-900 text-slate-400 group-focus-within:text-lime-400 font-bold text-xs px-3 h-full rounded-l-xl border-r border-slate-800">
-                  #{idx + 1}
-                </span>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => handlePlayerNameChange(idx, e.target.value)}
-                  className="w-full bg-transparent px-4 py-3 text-sm text-white font-semibold focus:outline-none placeholder-slate-600"
-                  placeholder={`Enter Competitor ${idx + 1}`}
-                />
-              </div>
-            ))}
-          </div>
-        </section>
+        {/* STAGE CONTROLLER CONTEXT WINDOW */}
 
-        {/* SECTION 2: Groups & Standings */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {['A', 'B', 'C'].map((gId) => (
-            <section key={gId} className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl backdrop-blur-sm group hover:border-slate-700/60 transition-colors">
-              <div>
-                <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-800">
-                  <h2 className="text-xl font-black text-white italic uppercase tracking-tight">GROUP {gId}</h2>
-                  <span className="text-[10px] font-bold px-2 py-0.5 bg-slate-800 rounded text-slate-400 uppercase tracking-widest">Table</span>
-                </div>
-                
-                {/* Standings Table */}
-                <table className="w-full text-left text-xs mb-6">
+        {/* STAGE 0: SQUAD REGISTRATION */}
+        {currentStage === STAGES.REGISTRATION && (
+          <section className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl space-y-6">
+            <div className="flex items-center gap-3">
+              <div className="w-1.5 h-6 bg-lime-400 rounded" />
+              <h2 className="text-lg font-black uppercase italic tracking-tight text-white">1. Core Roster Inputs</h2>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+              {playerInputs.map((val, idx) => (
+                <input
+                  key={idx}
+                  type="text"
+                  value={val}
+                  onChange={(e) => {
+                    const arr = [...playerInputs];
+                    arr[idx] = e.target.value;
+                    setPlayerInputs(arr);
+                  }}
+                  className="bg-slate-950 border border-slate-800 focus:border-lime-400 text-white font-semibold text-sm px-4 py-3 rounded-xl focus:outline-none transition-colors"
+                  placeholder={`Player Name ${idx + 1}`}
+                />
+              ))}
+            </div>
+            <button
+              onClick={handleShuffleAndLock}
+              className="w-full py-4 bg-gradient-to-r from-lime-400 to-emerald-500 hover:from-lime-300 hover:to-emerald-400 text-black font-black text-sm uppercase tracking-wider rounded-xl transition-all shadow-lg hover:shadow-lime-400/20 cursor-pointer"
+            >
+              🎲 Run Random Allocation & Generate Fixtures
+            </button>
+          </section>
+        )}
+
+        {/* STAGE 1: GROUP OPERATIONS MODULE */}
+        {currentStage >= STAGES.GROUP_STAGE && (
+          <div className="space-y-8">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {['A', 'B', 'C'].map((gId) => (
+                <section key={gId} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
+                  <div>
+                    <h2 className="text-xl font-black text-white italic uppercase tracking-tight mb-4 border-b border-slate-800 pb-2">
+                      GROUP {gId}
+                    </h2>
+                    <table className="w-full text-xs text-left mb-6">
+                      <thead>
+                        <tr className="text-slate-500 border-b border-slate-800">
+                          <th className="py-2">MANAGER</th>
+                          <th className="py-2 text-center">GD</th>
+                          <th className="py-2 text-right text-lime-400 font-bold">PTS</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/40">
+                        {groupStandings[gId]?.map((row, idx) => (
+                          <tr key={idx} className={idx < 2 ? 'text-lime-400 font-bold' : 'text-slate-400'}>
+                            <td className="py-2 text-white truncate max-w-[110px]">{row.name}</td>
+                            <td className="py-2 text-center font-mono">{row.gd > 0 ? `+${row.gd}` : row.gd}</td>
+                            <td className="py-2 text-right text-slate-200 font-black">{row.pts}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {currentStage === STAGES.GROUP_STAGE && (
+                    <div className="space-y-2 bg-slate-950/60 p-3 rounded-xl border border-slate-800/60">
+                      <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Inputs Matrix</span>
+                      {GROUP_FIXTURES_TEMPLATE.map((f, idx) => {
+                        const key = `G-${gId}-${idx}`;
+                        const p1 = randomizedSquads[gId][f.p1Idx];
+                        const p2 = randomizedSquads[gId][f.p2Idx];
+                        const score = groupScores[key] || { s1: '', s2: '' };
+
+                        return (
+                          <div key={idx} className="flex items-center justify-between text-xs bg-slate-950 p-2 border border-slate-800 rounded-lg">
+                            <span className="truncate w-20 text-slate-300 font-semibold">{p1}</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                placeholder="0"
+                                value={score.s1}
+                                onChange={(e) => setGroupScores(p => ({ ...p, [key]: { ...p[key], s1: e.target.value, played: true } }))}
+                                className="w-7 h-6 text-center bg-slate-900 text-lime-400 font-black border border-slate-800 rounded focus:outline-none"
+                              />
+                              <span className="text-slate-600 font-bold">:</span>
+                              <input
+                                type="number"
+                                placeholder="0"
+                                value={score.s2}
+                                onChange={(e) => setGroupScores(p => ({ ...p, [key]: { ...p[key], s2: e.target.value, played: true } }))}
+                                className="w-7 h-6 text-center bg-slate-900 text-lime-400 font-black border border-slate-800 rounded focus:outline-none"
+                              />
+                            </div>
+                            <span className="truncate w-20 text-right text-slate-300 font-semibold">{p2}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              ))}
+            </div>
+
+            {/* Stepper Logic Gate Control */}
+            {currentStage === STAGES.GROUP_STAGE && (
+              <button
+                disabled={!isStageComplete()}
+                onClick={() => setCurrentStage(STAGES.PLAYOFF_TABLE)}
+                className={`w-full py-4 rounded-xl font-black text-sm uppercase tracking-wider transition-all duration-300 ${
+                  isStageComplete() 
+                    ? 'bg-lime-400 text-black shadow-lg cursor-pointer' 
+                    : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed opacity-50'
+                }`}
+              >
+                {isStageComplete() ? "🔓 Advance to Playoff Round Table (Unlock Seeds 3-6)" : "🔒 Resolve All Group Matches to Advance"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* STAGE 2: INTERMEDIATE RE-SEEDING ROUND TABLE */}
+        {currentStage >= STAGES.PLAYOFF_TABLE && (
+          <section className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl space-y-6">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-1.5 h-6 bg-cyan-400 rounded" />
+                <h2 className="text-lg font-black uppercase italic tracking-tight text-white">2. Playoff Repêchage Table (Seeds 3-6)</h2>
+              </div>
+              <div className="bg-slate-950 px-3 py-1 border border-slate-800 rounded text-xs text-slate-400">
+                ⭐ <span className="text-lime-400 font-bold">{seedRankings[0]}</span> & <span className="text-lime-400 font-bold">{seedRankings[1]}</span> directly seed into Semifinals
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Table Ledger Display */}
+              <div className="bg-slate-950 p-4 border border-slate-800 rounded-xl space-y-3">
+                <span className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">Live Table Matrix</span>
+                <table className="w-full text-xs text-left">
                   <thead>
-                    <tr className="text-slate-500 font-bold border-b border-slate-800">
+                    <tr className="text-slate-500 border-b border-slate-800">
                       <th className="py-2">MANAGER</th>
-                      <th className="py-2 text-center">P</th>
-                      <th className="py-2 text-center">W</th>
+                      <th className="py-2 text-center">PL</th>
                       <th className="py-2 text-center">GD</th>
-                      <th className="py-2 text-right text-lime-400 font-black">PTS</th>
+                      <th className="py-2 text-right text-cyan-400 font-bold">PTS</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/40">
-                    {standings[gId].map((row, idx) => (
-                      <tr key={idx} className={`group/row ${idx < 2 ? 'text-lime-400 font-bold bg-lime-500/[0.02]' : 'text-slate-400'}`}>
-                        <td className="py-2.5 font-semibold truncate max-w-[120px] text-slate-200">
-                          <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 ${idx < 2 ? 'bg-lime-400 shadow-[0_0_8px_#ccff00]' : 'bg-slate-700'}`} />
-                          {row.name || `P${idx+1}`}
+                    {intermediateTableStandings.map((row, idx) => (
+                      <tr key={idx} className={idx < 2 ? 'text-cyan-400 font-bold bg-cyan-500/[0.01]' : 'text-slate-500'}>
+                        <td className="py-3 text-white font-semibold">
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 ${idx < 2 ? 'bg-cyan-400' : 'bg-slate-800'}`} />
+                          {row.name}
                         </td>
-                        <td className="py-2.5 text-center text-slate-400">{row.played}</td>
-                        <td className="py-2.5 text-center text-slate-400">{row.won}</td>
-                        <td className="py-2.5 text-center font-mono">{row.gd > 0 ? `+${row.gd}` : row.gd}</td>
-                        <td className="py-2.5 text-right font-black text-white">{row.points}</td>
+                        <td className="py-3 text-center text-slate-400">{row.p}</td>
+                        <td className="py-3 text-center font-mono text-slate-400">{row.gd > 0 ? `+${row.gd}` : row.gd}</td>
+                        <td className="py-3 text-right text-slate-200 font-black">{row.pts}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
 
-              {/* Group Fixtures */}
-              <div className="space-y-2 pt-4 border-t border-slate-800/60">
-                <span className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Fixtures</span>
-                {GROUP_MATCH_TEMPLATES.map((tmpl, idx) => {
-                  const key = `group-${gId}-${idx}`;
-                  const p1 = groups[gId][tmpl.p1Idx];
-                  const p2 = groups[gId][tmpl.p2Idx];
-                  const match = groupScores[key] || { score1: '', score2: '' };
+              {/* Data Mutation Interfaces */}
+              {currentStage === STAGES.PLAYOFF_TABLE && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-950 p-4 border border-slate-800 rounded-xl max-h-[280px] overflow-y-auto">
+                  {ROUND_TABLE_TEMPLATE.map((f, idx) => {
+                    const key = `RT-${idx}`;
+                    const pool = [seedRankings[2], seedRankings[3], seedRankings[4], seedRankings[5]];
+                    const p1 = pool[f.p1Idx];
+                    const p2 = pool[f.p2Idx];
+                    const score = roundTableScores[key] || { s1: '', s2: '' };
 
-                  return (
-                    <div key={idx} className="flex items-center justify-between gap-2 bg-slate-950/80 border border-slate-800/60 p-2.5 rounded-xl text-xs transition-colors hover:border-slate-800">
-                      <span className="truncate w-24 text-left font-bold text-slate-300">{p1 || 'TBD'}</span>
-                      <div className="flex items-center gap-1.5 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
-                        <input
-                          type="number"
-                          placeholder="0"
-                          value={match.score1}
-                          onChange={(e) => handleGroupScoreChange(key, 'score1', e.target.value)}
-                          className="w-7 text-center bg-transparent font-black text-lime-400 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        />
-                        <span className="text-slate-600 font-bold">:</span>
-                        <input
-                          type="number"
-                          placeholder="0"
-                          value={match.score2}
-                          onChange={(e) => handleGroupScoreChange(key, 'score2', e.target.value)}
-                          className="w-7 text-center bg-transparent font-black text-lime-400 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        />
+                    return (
+                      <div key={idx} className="flex flex-col p-2 bg-slate-900 border border-slate-800/60 rounded-lg justify-between space-y-1">
+                        <span className="text-[9px] font-bold text-slate-500 uppercase">{f.label}</span>
+                        <div className="flex items-center justify-between gap-1 text-xs">
+                          <span className="truncate w-16 text-slate-300 font-bold">{p1}</span>
+                          <div className="flex items-center gap-0.5">
+                            <input
+                              type="number"
+                              value={score.s1}
+                              onChange={(e) => setRoundTableScores(p => ({ ...p, [key]: { ...p[key], s1: e.target.value, played: true } }))}
+                              className="w-6 h-5 text-center bg-slate-950 text-cyan-400 font-bold border border-slate-800 rounded text-xs"
+                            />
+                            <span className="text-slate-600">:</span>
+                            <input
+                              type="number"
+                              value={score.s2}
+                              onChange={(e) => setRoundTableScores(p => ({ ...p, [key]: { ...p[key], s2: e.target.value, played: true } }))}
+                              className="w-6 h-5 text-center bg-slate-950 text-cyan-400 font-bold border border-slate-800 rounded text-xs"
+                            />
+                          </div>
+                          <span className="truncate w-16 text-right text-slate-300 font-bold">{p2}</span>
+                        </div>
                       </div>
-                      <span className="truncate w-24 text-right font-bold text-slate-300">{p2 || 'TBD'}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-        </div>
-
-        {/* SECTION 3: Tournament Bracket */}
-        <section className="bg-slate-900/40 p-6 rounded-3xl border border-slate-800 shadow-2xl relative overflow-hidden backdrop-blur-sm">
-          <div className="absolute top-0 left-1/2 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl -z-10 -translate-x-1/2" />
-          <div className="flex items-center gap-3 mb-8">
-            <div className="w-1.5 h-6 bg-lime-400 rounded" />
-            <h2 className="text-xl font-black uppercase tracking-tight italic text-white">Championship Playoff Arena</h2>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
-            
-            {/* Column 1: Quarterfinals */}
-            <div className="space-y-6">
-              <div className="text-center font-black text-[11px] uppercase text-slate-500 tracking-widest border-b border-slate-800/80 pb-2 mb-4">Quarterfinals</div>
-              
-              {/* QF 1 */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3 relative group hover:border-slate-700 transition-colors">
-                <div className="text-[9px] font-black tracking-wider text-lime-400 uppercase bg-lime-500/10 px-2 py-0.5 rounded inline-block">MATCH 10 • QF 1</div>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-300 truncate max-w-[140px]">🏆 {seededPlayers[2] || 'Seed 3'}</span>
-                    <input
-                      type="number"
-                      value={playoffs.qf1.score1}
-                      onChange={(e) => handlePlayoffScoreChange('qf1', 'score1', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-lime-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-300 truncate max-w-[140px]">⚡ {seededPlayers[5] || 'Seed 6'}</span>
-                    <input
-                      type="number"
-                      value={playoffs.qf1.score2}
-                      onChange={(e) => handlePlayoffScoreChange('qf1', 'score2', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-lime-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
+                    );
+                  })}
                 </div>
-              </div>
-
-              {/* QF 2 */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3 relative group hover:border-slate-700 transition-colors">
-                <div className="text-[9px] font-black tracking-wider text-lime-400 uppercase bg-lime-500/10 px-2 py-0.5 rounded inline-block">MATCH 11 • QF 2</div>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-300 truncate max-w-[140px]">🏆 {seededPlayers[3] || 'Seed 4'}</span>
-                    <input
-                      type="number"
-                      value={playoffs.qf2.score1}
-                      onChange={(e) => handlePlayoffScoreChange('qf2', 'score1', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-lime-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-300 truncate max-w-[140px]">⚡ {seededPlayers[4] || 'Seed 5'}</span>
-                    <input
-                      type="number"
-                      value={playoffs.qf2.score2}
-                      onChange={(e) => handlePlayoffScoreChange('qf2', 'score2', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-lime-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
 
-            {/* Column 2: Semifinals */}
-            <div className="space-y-6">
-              <div className="text-center font-black text-[11px] uppercase text-slate-500 tracking-widest border-b border-slate-800/80 pb-2 mb-4">Semifinals</div>
+            {currentStage === STAGES.PLAYOFF_TABLE && (
+              <button
+                disabled={!isStageComplete()}
+                onClick={() => setCurrentStage(STAGES.SEMIFINALS)}
+                className={`w-full py-4 rounded-xl font-black text-sm uppercase tracking-wider transition-all duration-300 ${
+                  isStageComplete() 
+                    ? 'bg-cyan-400 text-black shadow-lg cursor-pointer' 
+                    : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed opacity-50'
+                }`}
+              >
+                {isStageComplete() ? "🔓 Unlock Semifinals Bracket" : "🔒 Complete Round Table Fixtures to Advance"}
+              </button>
+            )}
+          </section>
+        )}
 
-              {/* SF 1 */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3 relative group hover:border-slate-700 transition-colors">
-                <div className="text-[9px] font-black tracking-wider text-cyan-400 uppercase bg-cyan-500/10 px-2 py-0.5 rounded inline-block">MATCH 12 • SF 1</div>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-300 truncate max-w-[140px]">⭐ {seededPlayers[0] || 'Seed 1'}</span>
-                    <input
-                      type="number"
-                      value={playoffs.sf1.score1}
-                      onChange={(e) => handlePlayoffScoreChange('sf1', 'score1', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-cyan-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-slate-500 truncate max-w-[140px] italic">{bracketData.qf2Winner.name}</span>
-                    <input
-                      type="number"
-                      value={playoffs.sf1.score2}
-                      onChange={(e) => handlePlayoffScoreChange('sf1', 'score2', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-cyan-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* SF 2 */}
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-lg space-y-3 relative group hover:border-slate-700 transition-colors">
-                <div className="text-[9px] font-black tracking-wider text-cyan-400 uppercase bg-cyan-500/10 px-2 py-0.5 rounded inline-block">MATCH 13 • SF 2</div>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-slate-300 truncate max-w-[140px]">⭐ {seededPlayers[1] || 'Seed 2'}</span>
-                    <input
-                      type="number"
-                      value={playoffs.sf2.score1}
-                      onChange={(e) => handlePlayoffScoreChange('sf2', 'score1', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-cyan-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-slate-500 truncate max-w-[140px] italic">{bracketData.qf1Winner.name}</span>
-                    <input
-                      type="number"
-                      value={playoffs.sf2.score2}
-                      onChange={(e) => handlePlayoffScoreChange('sf2', 'score2', e.target.value)}
-                      className="w-9 h-8 text-center bg-slate-900 rounded-xl border border-slate-800 focus:border-cyan-400 focus:outline-none font-black text-white"
-                    />
-                  </div>
-                </div>
-              </div>
+        {/* STAGE 3 & 4: CHRONOLOGICAL KNOCKOUT ARENA */}
+        {currentStage >= STAGES.SEMIFINALS && (
+          <section className="bg-slate-900/40 p-6 rounded-3xl border border-slate-800 shadow-2xl relative backdrop-blur-sm">
+            <div className="flex items-center gap-3 mb-8">
+              <div className="w-1.5 h-6 bg-pink-500 rounded" />
+              <h2 className="text-xl font-black uppercase tracking-tight italic text-white">3. Final Knockout Stage</h2>
             </div>
 
-            {/* Column 3: Grand Finale Box */}
-            <div className="flex flex-col justify-center items-center pt-4 md:pt-0">
-              <div className="text-center font-black text-[11px] uppercase text-slate-500 tracking-widest border-b border-slate-800/80 pb-2 mb-8 w-full">Championship Final</div>
-              
-              <div className="relative bg-gradient-to-br from-slate-950 to-slate-900 p-6 rounded-2xl border-2 border-lime-400 w-full max-w-sm shadow-[0_0_30px_rgba(204,255,0,0.15)] text-center space-y-5">
-                <div className="absolute top-0 right-4 transform -translate-y-1/2 bg-lime-400 text-black font-black text-[9px] tracking-widest uppercase px-3 py-0.5 rounded-full shadow-md">
-                  MATCH 14
-                </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+              {/* Semifinals Grid System */}
+              <div className="space-y-4">
+                <span className="block text-center text-[10px] font-black tracking-widest text-slate-500 uppercase border-b border-slate-800 pb-2">Semifinal Duels</span>
                 
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-black text-slate-200 truncate max-w-[160px]">{bracketData.sf1Winner.name}</span>
-                    <input
-                      type="number"
-                      value={playoffs.final.score1}
-                      onChange={(e) => handlePlayoffScoreChange('final', 'score1', e.target.value)}
-                      className="w-12 h-9 text-center bg-slate-900 rounded-xl border border-slate-700 text-lime-400 font-black text-lg focus:outline-none focus:border-lime-400"
-                    />
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-black text-slate-200 truncate max-w-[160px]">{bracketData.sf2Winner.name}</span>
-                    <input
-                      type="number"
-                      value={playoffs.final.score2}
-                      onChange={(e) => handlePlayoffScoreChange('final', 'score2', e.target.value)}
-                      className="w-12 h-9 text-center bg-slate-900 rounded-xl border border-slate-700 text-lime-400 font-black text-lg focus:outline-none focus:border-lime-400"
-                    />
+                {/* SF1 Card */}
+                <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
+                  <div className="text-[9px] font-black text-pink-500 uppercase">MATCH 12 • SF 1</div>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-300">{finalFourPairings.sf1[0]} (Seed 1)</span>
+                      <input
+                        type="number"
+                        disabled={currentStage > STAGES.SEMIFINALS}
+                        value={knockoutScores.sf1.s1}
+                        onChange={(e) => setKnockoutScores(p => ({ ...p, sf1: { ...p.sf1, s1: e.target.value, played: true } }))}
+                        className="w-8 h-7 text-center bg-slate-900 border border-slate-800 text-white font-black rounded"
+                      />
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-300">{finalFourPairings.sf1[1]} (Table Rank 2)</span>
+                      <input
+                        type="number"
+                        disabled={currentStage > STAGES.SEMIFINALS}
+                        value={knockoutScores.sf1.s2}
+                        onChange={(e) => setKnockoutScores(p => ({ ...p, sf1: { ...p.sf1, s2: e.target.value, played: true } }))}
+                        className="w-8 h-7 text-center bg-slate-900 border border-slate-800 text-white font-black rounded"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                {bracketData.champion.solved && (
-                  <div className="mt-4 pt-4 border-t border-slate-800 animate-fadeIn">
-                    <div className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">🏆 GRAND CHAMPION 🏆</div>
-                    <div className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-lime-400 to-emerald-400 uppercase tracking-tighter italic mt-1 drop-shadow-md">
-                      {bracketData.champion.name}
+                {/* SF2 Card */}
+                <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
+                  <div className="text-[9px] font-black text-pink-500 uppercase">MATCH 13 • SF 2</div>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-300">{finalFourPairings.sf2[0]} (Seed 2)</span>
+                      <input
+                        type="number"
+                        disabled={currentStage > STAGES.SEMIFINALS}
+                        value={knockoutScores.sf2.s1}
+                        onChange={(e) => setKnockoutScores(p => ({ ...p, sf2: { ...p.sf2, s1: e.target.value, played: true } }))}
+                        className="w-8 h-7 text-center bg-slate-900 border border-slate-800 text-white font-black rounded"
+                      />
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-300">{finalFourPairings.sf2[1]} (Table Rank 1)</span>
+                      <input
+                        type="number"
+                        disabled={currentStage > STAGES.SEMIFINALS}
+                        value={knockoutScores.sf2.s2}
+                        onChange={(e) => setKnockoutScores(p => ({ ...p, sf2: { ...p.sf2, s2: e.target.value, played: true } }))}
+                        className="w-8 h-7 text-center bg-slate-900 border border-slate-800 text-white font-black rounded"
+                      />
                     </div>
                   </div>
+                </div>
+
+                {currentStage === STAGES.SEMIFINALS && (
+                  <button
+                    disabled={!isStageComplete()}
+                    onClick={() => setCurrentStage(STAGES.FINAL)}
+                    className={`w-full py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all ${
+                      isStageComplete() ? 'bg-pink-500 text-white cursor-pointer' : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                    }`}
+                  >
+                    Lock Winners & Lock Grand Final
+                  </button>
                 )}
               </div>
-            </div>
 
-          </div>
-        </section>
+              {/* Grand Final Arena Module */}
+              <div className="flex flex-col items-center justify-center">
+                <span className="block text-center text-[10px] font-black tracking-widest text-slate-500 uppercase border-b border-slate-800 pb-2 mb-4 w-full">Championship Match</span>
+                
+                <div className="bg-gradient-to-br from-slate-950 to-slate-900 border-2 border-lime-400 p-6 rounded-2xl text-center shadow-2xl w-full max-w-xs space-y-4">
+                  <span className="text-[9px] font-black px-2 py-0.5 bg-lime-400 text-black rounded tracking-widest uppercase">MATCH 14 • CONCLUDED</span>
+                  
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-200">{finalFourPairings.final[0]}</span>
+                      <input
+                        type="number"
+                        disabled={currentStage < STAGES.FINAL}
+                        value={knockoutScores.final.s1}
+                        onChange={(e) => setKnockoutScores(p => ({ ...p, final: { ...p.final, s1: e.target.value, played: true } }))}
+                        className="w-10 h-8 text-center bg-slate-900 border border-slate-800 text-lime-400 font-black text-md rounded"
+                      />
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-200">{finalFourPairings.final[1]}</span>
+                      <input
+                        type="number"
+                        disabled={currentStage < STAGES.FINAL}
+                        value={knockoutScores.final.s2}
+                        onChange={(e) => setKnockoutScores(p => ({ ...p, final: { ...p.final, s2: e.target.value, played: true } }))}
+                        className="w-10 h-8 text-center bg-slate-900 border border-slate-800 text-lime-400 font-black text-md rounded"
+                      />
+                    </div>
+                  </div>
+
+                  {finalFourPairings.champ !== 'TBD' && (
+                    <div className="pt-4 border-t border-slate-800 bg-lime-400/5 rounded-xl p-2 border border-lime-400/10">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">CHAMPION DECLARED</span>
+                      <span className="text-xl font-black italic text-transparent bg-clip-text bg-gradient-to-r from-lime-400 to-emerald-400 uppercase">
+                        👑 {finalFourPairings.champ}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );
