@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 
 // STAGE CONSTANTS FOR FLOW CONTROL
 const STAGES = {
@@ -9,14 +9,13 @@ const STAGES = {
   FINAL: 4,
 };
 
-// Fixture generator for a 3-player round robin inside a group
+// Fixture generator templates
 const GROUP_FIXTURES_TEMPLATE = [
   { p1Idx: 0, p2Idx: 1 },
   { p1Idx: 1, p2Idx: 2 },
   { p1Idx: 0, p2Idx: 2 },
 ];
 
-// Fixture generator for the 4-player intermediate round robin table
 const ROUND_TABLE_TEMPLATE = [
   { p1Idx: 0, p2Idx: 1, label: "Match R1-A" },
   { p1Idx: 2, p2Idx: 3, label: "Match R1-B" },
@@ -26,28 +25,73 @@ const ROUND_TABLE_TEMPLATE = [
   { p1Idx: 1, p2Idx: 2, label: "Match R3-B" },
 ];
 
+// Local Storage Helper to fetch initial state or fallback gracefully
+const getLocalStorageOrDefault = (key, defaultValue) => {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : defaultValue;
+  } catch (e) {
+    console.error("Failed to read localStorage data:", e);
+    return defaultValue;
+  }
+};
+
 export default function App() {
-  const [currentStage, setCurrentStage] = useState(STAGES.REGISTRATION);
-  
-  // Registration State
-  const [playerInputs, setPlayerInputs] = useState(
-    Array(9).fill("").map((_, i) => `Competitor ${i + 1}`)
+  // Persistent States synced to LocalStorage
+  const [currentStage, setCurrentStage] = useState(() => 
+    getLocalStorageOrDefault('fifa_stage', STAGES.REGISTRATION)
   );
-  const [randomizedSquads, setRandomizedSquads] = useState({ A: [], B: [], C: [] });
+  
+  const [playerInputs, setPlayerInputs] = useState(() => 
+    getLocalStorageOrDefault('fifa_player_inputs', Array(9).fill("").map((_, i) => `Competitor ${i + 1}`))
+  );
+  
+  const [randomizedSquads, setRandomizedSquads] = useState(() => 
+    getLocalStorageOrDefault('fifa_randomized_squads', { A: [], B: [], C: [] })
+  );
 
-  // Match Scoring Matrices
-  const [groupScores, setGroupScores] = useState({}); // Key format: "G-[Group]-[Idx]"
-  const [roundTableScores, setRoundTableScores] = useState({}); // Key format: "RT-[Idx]"
-  const [knockoutScores, setKnockoutScores] = useState({
-    sf1: { s1: '', s2: '', played: false },
-    sf2: { s1: '', s2: '', played: false },
-    final: { s1: '', s2: '', played: false },
-  });
+  const [groupScores, setGroupScores] = useState(() => 
+    getLocalStorageOrDefault('fifa_group_scores', {})
+  );
+  
+  const [roundTableScores, setRoundTableScores] = useState(() => 
+    getLocalStorageOrDefault('fifa_round_table_scores', {})
+  );
+  
+  const [knockoutScores, setKnockoutScores] = useState(() => 
+    getLocalStorageOrDefault('fifa_knockout_scores', {
+      sf1: { s1: '', s2: '', played: false },
+      sf2: { s1: '', s2: '', played: false },
+      final: { s1: '', s2: '', played: false },
+    })
+  );
 
-  // --- ACTIONS & ENGINE REQUISITES ---
+  // --- EFFECT COUPLING FOR DATA PERSISTENCE ---
+  useEffect(() => { localStorage.setItem('fifa_stage', JSON.stringify(currentStage)); }, [currentStage]);
+  useEffect(() => { localStorage.setItem('fifa_player_inputs', JSON.stringify(playerInputs)); }, [playerInputs]);
+  useEffect(() => { localStorage.setItem('fifa_randomized_squads', JSON.stringify(randomizedSquads)); }, [randomizedSquads]);
+  useEffect(() => { localStorage.setItem('fifa_group_scores', JSON.stringify(groupScores)); }, [groupScores]);
+  useEffect(() => { localStorage.setItem('fifa_round_table_scores', JSON.stringify(roundTableScores)); }, [roundTableScores]);
+  useEffect(() => { localStorage.setItem('fifa_knockout_scores', JSON.stringify(knockoutScores)); }, [knockoutScores]);
+
+  // --- TOURNEY RENEWAL DESTRUCT ENGINE ---
+  const handleEndTournament = () => {
+    if (window.confirm("Are you absolute certain you wish to terminate this tournament? All logged results will be permanently purged.")) {
+      localStorage.clear();
+      setCurrentStage(STAGES.REGISTRATION);
+      setPlayerInputs(Array(9).fill("").map((_, i) => `Competitor ${i + 1}`));
+      setRandomizedSquads({ A: [], B: [], C: [] });
+      setGroupScores({});
+      setRoundTableScores({});
+      setKnockoutScores({
+        sf1: { s1: '', s2: '', played: false },
+        sf2: { s1: '', s2: '', played: false },
+        final: { s1: '', s2: '', played: false },
+      });
+    }
+  };
 
   const handleShuffleAndLock = () => {
-    // Implement standard Fisher-Yates array shuffle execution
     const pool = [...playerInputs].map(p => p.trim() || "Anonymous Pro");
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -63,8 +107,6 @@ export default function App() {
   };
 
   // --- DYNAMIC DATA AGGREGATORS (MEMOIZED) ---
-
-  // Compute Group Stage Standings & Matrix
   const groupStandings = useMemo(() => {
     if (currentStage < STAGES.GROUP_STAGE) return { A: [], B: [], C: [] };
 
@@ -80,7 +122,6 @@ export default function App() {
       C: initializeStandingsNode(randomizedSquads.C),
     };
 
-    // Calculate match arrays iteratively
     ['A', 'B', 'C'].forEach(groupId => {
       GROUP_FIXTURES_TEMPLATE.forEach((f, idx) => {
         const key = `G-${groupId}-${idx}`;
@@ -110,7 +151,6 @@ export default function App() {
       });
     });
 
-    // High performance multi-level validation sorting
     const sortStandings = (obj) => Object.values(obj).sort((a, b) => b.pts - a.pts || b.gd - a.gd || a.name.localeCompare(b.name));
 
     return {
@@ -120,28 +160,24 @@ export default function App() {
     };
   }, [randomizedSquads, groupScores, currentStage]);
 
-  // Evaluated Seeding for Stage Gate 2 Advancement
   const seedRankings = useMemo(() => {
     if (currentStage < STAGES.GROUP_STAGE) return [];
     
-    // Extract top 2 qualifiers per group layout
     const rawQualifiers = [];
     ['A', 'B', 'C'].forEach(g => {
       if (groupStandings[g][0]) rawQualifiers.push({ ...groupStandings[g][0], grpRank: 1 });
       if (groupStandings[g][1]) rawQualifiers.push({ ...groupStandings[g][1], grpRank: 2 });
     });
 
-    // Global Seed Strategy: Rank 1s outrank Rank 2s always, followed by metric resolution
     return rawQualifiers.sort((a, b) => {
       if (a.grpRank !== b.grpRank) return a.grpRank - b.grpRank;
       return b.pts - a.pts || b.gd - a.gd || a.name.localeCompare(b.name);
     }).map(item => item.name);
   }, [groupStandings, currentStage]);
 
-  // Intermediate Round Table Engine Core
   const intermediateTableStandings = useMemo(() => {
     if (seedRankings.length < 6) return [];
-    const tableContenders = [seedRankings[2], seedRankings[3], seedRankings[4], seedRankings[5]]; // Seeds 3 to 6
+    const tableContenders = [seedRankings[2], seedRankings[3], seedRankings[4], seedRankings[5]];
 
     const structure = tableContenders.reduce((acc, name) => {
       acc[name] = { name, p: 0, w: 0, d: 0, l: 0, gd: 0, pts: 0 };
@@ -176,22 +212,21 @@ export default function App() {
     return Object.values(structure).sort((a, b) => b.pts - a.pts || b.gd - a.gd || a.name.localeCompare(b.name));
   }, [seedRankings, roundTableScores]);
 
-  // Compute Knockout Bracket Graph
   const finalFourPairings = useMemo(() => {
     if (seedRankings.length < 2 || intermediateTableStandings.length < 2) {
       return { sf1: ['TBD', 'TBD'], sf2: ['TBD', 'TBD'], final: ['TBD', 'TBD'], champ: 'TBD' };
     }
 
-    const sf1_p1 = seedRankings[0]; // Seed 1
-    const sf1_p2 = intermediateTableStandings[1]?.name || 'TBD'; // Table Rank 2
-    const sf2_p1 = seedRankings[1]; // Seed 2
-    const sf2_p2 = intermediateTableStandings[0]?.name || 'TBD'; // Table Rank 1
+    const sf1_p1 = seedRankings[0];
+    const sf1_p2 = intermediateTableStandings[1]?.name || 'TBD';
+    const sf2_p1 = seedRankings[1];
+    const sf2_p2 = intermediateTableStandings[0]?.name || 'TBD';
 
     const getMatchWinner = (scoreNode, fallbackP1, fallbackP2) => {
       if (!scoreNode || !scoreNode.played) return 'TBD';
       const s1 = parseInt(scoreNode.s1) || 0;
       const s2 = parseInt(scoreNode.s2) || 0;
-      return s1 > s2 ? fallbackP1 : s2 > s1 ? fallbackP2 : 'TBD (Draw Error)';
+      return s1 > s2 ? fallbackP1 : s2 > s1 ? fallbackP2 : 'TBD';
     };
 
     const f_p1 = getMatchWinner(knockoutScores.sf1, sf1_p1, sf1_p2);
@@ -206,7 +241,6 @@ export default function App() {
     };
   }, [seedRankings, intermediateTableStandings, knockoutScores]);
 
-  // Check stage completion to unlock next button safely
   const isStageComplete = () => {
     if (currentStage === STAGES.GROUP_STAGE) {
       return ['A', 'B', 'C'].every(g => 
@@ -228,32 +262,42 @@ export default function App() {
       
       <div className="max-w-7xl mx-auto px-4 py-10 space-y-12">
         {/* HEADER BRANDING */}
-        <header className="relative flex flex-col md:flex-row justify-between items-center bg-slate-900/60 border border-slate-800 p-6 rounded-2xl backdrop-blur-md shadow-2xl">
+        <header className="relative flex flex-col md:flex-row justify-between items-center bg-slate-900/60 border border-slate-800 p-6 rounded-2xl backdrop-blur-md shadow-2xl gap-4">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 bg-lime-500/10 text-lime-400 border border-lime-500/20 px-3 py-1 rounded-full text-xs font-black tracking-widest uppercase">
-              ⚙️ ARCHITECT EDITION
+              🛡️ PERSISTENT STORAGE ACTIVE
             </div>
             <h1 className="text-4xl font-black tracking-tighter uppercase text-white italic">
               PRO MATCH <span className="text-lime-400">ENGINE v2</span>
             </h1>
           </div>
-          <div className="mt-4 md:mt-0 flex gap-2">
-            {Object.keys(STAGES).map((name, val) => (
-              <span 
-                key={name}
-                className={`text-[10px] px-3 py-1.5 font-bold rounded-lg border tracking-wider transition-all ${
-                  currentStage === val 
-                    ? 'bg-lime-400 text-black border-lime-400 shadow-[0_0_15px_rgba(204,255,0,0.3)]' 
-                    : 'bg-slate-900 text-slate-500 border-slate-800'
-                }`}
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              {Object.keys(STAGES).map((name, val) => (
+                <span 
+                  key={name}
+                  className={`text-[9px] px-2.5 py-1.5 font-bold rounded-lg tracking-wider transition-all ${
+                    currentStage === val 
+                      ? 'bg-lime-400 text-black font-black' 
+                      : 'text-slate-500'
+                  }`}
+                >
+                  {name}
+                </span>
+              ))}
+            </div>
+
+            {/* CRITICAL END TOURNAMENT TERMINATOR BUTTON */}
+            {currentStage > STAGES.REGISTRATION && (
+              <button
+                onClick={handleEndTournament}
+                className="px-4 py-2 text-xs font-black uppercase tracking-wider text-red-400 border border-red-500/30 hover:border-red-500 bg-red-500/10 hover:bg-red-500/20 rounded-xl cursor-pointer transition-all"
               >
-                {name}
-              </span>
-            ))}
+                🚨 End Tournament
+              </button>
+            )}
           </div>
         </header>
-
-        {/* STAGE CONTROLLER CONTEXT WINDOW */}
 
         {/* STAGE 0: SQUAD REGISTRATION */}
         {currentStage === STAGES.REGISTRATION && (
@@ -280,7 +324,7 @@ export default function App() {
             </div>
             <button
               onClick={handleShuffleAndLock}
-              className="w-full py-4 bg-gradient-to-r from-lime-400 to-emerald-500 hover:from-lime-300 hover:to-emerald-400 text-black font-black text-sm uppercase tracking-wider rounded-xl transition-all shadow-lg hover:shadow-lime-400/20 cursor-pointer"
+              className="w-full py-4 bg-gradient-to-r from-lime-400 to-emerald-500 hover:from-lime-300 hover:to-emerald-400 text-black font-black text-sm uppercase tracking-wider rounded-xl transition-all shadow-lg cursor-pointer"
             >
               🎲 Run Random Allocation & Generate Fixtures
             </button>
@@ -356,7 +400,6 @@ export default function App() {
               ))}
             </div>
 
-            {/* Stepper Logic Gate Control */}
             {currentStage === STAGES.GROUP_STAGE && (
               <button
                 disabled={!isStageComplete()}
@@ -387,7 +430,6 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Table Ledger Display */}
               <div className="bg-slate-950 p-4 border border-slate-800 rounded-xl space-y-3">
                 <span className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">Live Table Matrix</span>
                 <table className="w-full text-xs text-left">
@@ -415,7 +457,6 @@ export default function App() {
                 </table>
               </div>
 
-              {/* Data Mutation Interfaces */}
               {currentStage === STAGES.PLAYOFF_TABLE && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-950 p-4 border border-slate-800 rounded-xl max-h-[280px] overflow-y-auto">
                   {ROUND_TABLE_TEMPLATE.map((f, idx) => {
@@ -479,7 +520,6 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
-              {/* Semifinals Grid System */}
               <div className="space-y-4">
                 <span className="block text-center text-[10px] font-black tracking-widest text-slate-500 uppercase border-b border-slate-800 pb-2">Semifinal Duels</span>
                 
